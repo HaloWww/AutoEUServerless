@@ -108,75 +108,75 @@ def login_retry(*args, **kwargs):
     return wrapper
 
 # 验证码解决器
-def captcha_solver(captcha_image_url: str, session: requests.session) -> dict:
-    # TrueCaptcha API 文档: https://apitruecaptcha.org/api
-    # 似乎已经无法免费试用,但是充值1刀可以识别3000个二维码,足够用一阵子了
+# def captcha_solver(captcha_image_url: str, session: requests.session) -> dict:
+#     # TrueCaptcha API 文档: https://apitruecaptcha.org/api
+#     # 似乎已经无法免费试用,但是充值1刀可以识别3000个二维码,足够用一阵子了
 
-    response = session.get(captcha_image_url)
-    encoded_string = base64.b64encode(response.content)
-    url = "https://api.apitruecaptcha.org/one/gettext"
+#     response = session.get(captcha_image_url)
+#     encoded_string = base64.b64encode(response.content)
+#     url = "https://api.apitruecaptcha.org/one/gettext"
 
-    data = {
-        "userid": TRUECAPTCHA_USERID,
-        "apikey": TRUECAPTCHA_APIKEY,
-        "case": "mixed",
-        "mode": "human",
-        "data": str(encoded_string)[2:-1],
-    }
-    r = requests.post(url=url, json=data)
-    j = json.loads(r.text)
-    return j
+#     data = {
+#         "userid": TRUECAPTCHA_USERID,
+#         "apikey": TRUECAPTCHA_APIKEY,
+#         "case": "mixed",
+#         "mode": "human",
+#         "data": str(encoded_string)[2:-1],
+#     }
+#     r = requests.post(url=url, json=data)
+#     j = json.loads(r.text)
+#     return j
 
 # 处理验证码解决结果
-def handle_captcha_solved_result(solved: dict) -> str:
-    # 处理验证码解决结果# 
-    if "result" in solved:
-        solved_text = solved["result"]
-        if "RESULT  IS" in solved_text:
-            log("[Captcha Solver] 使用的是演示 apikey。")
-            # 因为使用了演示 apikey
-            text = re.findall(r"RESULT  IS . (.*) .", solved_text)[0]
-        else:
-            # 使用自己的 apikey
-            log("[Captcha Solver] 使用的是您自己的 apikey。")
-            text = solved_text
-        operators = ["X", "x", "+", "-"]
-        if any(x in text for x in operators):
-            for operator in operators:
-                operator_pos = text.find(operator)
-                if operator == "x" or operator == "X":
-                    operator = "*"
-                if operator_pos != -1:
-                    left_part = text[:operator_pos]
-                    right_part = text[operator_pos + 1 :]
-                    if left_part.isdigit() and right_part.isdigit():
-                        return eval(
-                            "{left} {operator} {right}".format(
-                                left=left_part, operator=operator, right=right_part
-                            )
-                        )
-                    else:
-                        # 这些符号("X", "x", "+", "-")不会同时出现，
-                        # 它只包含一个算术符号。
-                        return text
-        else:
-            return text
-    else:
-        print(solved)
-        raise KeyError("未找到解析结果。")
+# def handle_captcha_solved_result(solved: dict) -> str:
+#     # 处理验证码解决结果# 
+#     if "result" in solved:
+#         solved_text = solved["result"]
+#         if "RESULT  IS" in solved_text:
+#             log("[Captcha Solver] 使用的是演示 apikey。")
+#             # 因为使用了演示 apikey
+#             text = re.findall(r"RESULT  IS . (.*) .", solved_text)[0]
+#         else:
+#             # 使用自己的 apikey
+#             log("[Captcha Solver] 使用的是您自己的 apikey。")
+#             text = solved_text
+#         operators = ["X", "x", "+", "-"]
+#         if any(x in text for x in operators):
+#             for operator in operators:
+#                 operator_pos = text.find(operator)
+#                 if operator == "x" or operator == "X":
+#                     operator = "*"
+#                 if operator_pos != -1:
+#                     left_part = text[:operator_pos]
+#                     right_part = text[operator_pos + 1 :]
+#                     if left_part.isdigit() and right_part.isdigit():
+#                         return eval(
+#                             "{left} {operator} {right}".format(
+#                                 left=left_part, operator=operator, right=right_part
+#                             )
+#                         )
+#                     else:
+#                         # 这些符号("X", "x", "+", "-")不会同时出现，
+#                         # 它只包含一个算术符号。
+#                         return text
+#         else:
+#             return text
+#     else:
+#         print(solved)
+#         raise KeyError("未找到解析结果。")
 
-# 获取验证码解决器使用情况
-def get_captcha_solver_usage() -> dict:
-    # 获取验证码解决器的使用情况# 
-    url = "https://api.apitruecaptcha.org/one/getusage"
+# # 获取验证码解决器使用情况
+# def get_captcha_solver_usage() -> dict:
+#     # 获取验证码解决器的使用情况# 
+#     url = "https://api.apitruecaptcha.org/one/getusage"
 
-    params = {
-        "username": TRUECAPTCHA_USERID,
-        "apikey": TRUECAPTCHA_APIKEY,
-    }
-    r = requests.get(url=url, params=params)
-    j = json.loads(r.text)
-    return j
+#     params = {
+#         "username": TRUECAPTCHA_USERID,
+#         "apikey": TRUECAPTCHA_APIKEY,
+#     }
+#     r = requests.get(url=url, params=params)
+#     j = json.loads(r.text)
+#     return j
 
 # 从 Mailparser 获取 PIN
 def get_pin_from_mailparser(url_id: str) -> str:
