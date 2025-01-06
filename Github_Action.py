@@ -107,7 +107,7 @@ def login_retry(*args, **kwargs):
         return inner
     return wrapper
 
-验证码解决器
+# 验证码解决器
 def captcha_solver(captcha_image_url: str, session: requests.session) -> dict:
     # TrueCaptcha API 文档: https://apitruecaptcha.org/api
     # 似乎已经无法免费试用,但是充值1刀可以识别3000个二维码,足够用一阵子了
@@ -127,7 +127,7 @@ def captcha_solver(captcha_image_url: str, session: requests.session) -> dict:
     j = json.loads(r.text)
     return j
 
-处理验证码解决结果
+# 处理验证码解决结果
 def handle_captcha_solved_result(solved: dict) -> str:
     # 处理验证码解决结果# 
     if "result" in solved:
