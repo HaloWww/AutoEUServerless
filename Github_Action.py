@@ -15,6 +15,14 @@ import sys
 import json
 import time
 import base64
+import imaplib
+import ssl
+from contextlib import contextmanager
+from datetime import timezone
+from email import policy
+from email.parser import BytesParser
+from email.utils import getaddresses, parseaddr, parsedate_to_datetime
+from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
@@ -54,6 +62,23 @@ user_agent = (
     "Chrome/95.0.4638.69 Safari/537.36"
 )
 desp = ""  # 日志信息
+
+# 可用环境变量或脚本旁的 euserv-pin.json 配置；私密配置不应提交到仓库。
+_pin_config_file = Path(os.getenv("EUSERV_PIN_CONFIG") or Path(__file__).with_name("euserv-pin.json"))
+_pin_config = json.loads(_pin_config_file.read_text(encoding="utf-8")) if _pin_config_file.exists() else {}
+
+
+def pin_setting(name, default=""):
+    return os.getenv(name) or _pin_config.get(name, default)
+
+
+PIN_SOURCE = pin_setting("EUSERV_PIN_SOURCE", "mailparser").lower()
+IMAP_HOST = pin_setting("IMAP_HOST", "imap.gmail.com")
+IMAP_PORT = int(pin_setting("IMAP_PORT", 993))
+IMAP_USERNAME = pin_setting("IMAP_USERNAME")
+IMAP_APP_PASSWORD = pin_setting("IMAP_APP_PASSWORD")
+IMAP_FOLDER = pin_setting("IMAP_FOLDER")
+IMAP_PIN_RECIPIENT = pin_setting("IMAP_PIN_RECIPIENT")
 
 def log(info: str):
     # 打印并记录日志信息，附带 emoji 以增加可读性
@@ -220,6 +245,121 @@ def get_pin_from_mailparser(url_id: str, previous_records: set) -> str:
             raise RuntimeError("Mailparser 未收到本次请求的新 PIN；请检查邮件转发、解析规则及额度")
         time.sleep(min(WAITING_TIME_OF_PIN, remaining))
 
+
+@contextmanager
+def imap_mailbox():
+    client = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT,
+                              ssl_context=ssl.create_default_context(), timeout=30)
+    try:
+        try:
+            client.login(IMAP_USERNAME, IMAP_APP_PASSWORD.replace(" ", ""))
+        except imaplib.IMAP4.error:
+            raise RuntimeError("IMAP 登录失败，请检查邮箱地址和应用专用密码") from None
+        folder = IMAP_FOLDER
+        if folder:
+            folder = '"' + folder.replace('\\', '\\\\').replace('"', '\\"') + '"'
+        else:
+            status, folders = client.list()
+            if status != "OK":
+                raise RuntimeError("IMAP 无法列出邮箱文件夹")
+            # Gmail PIN 可能被过滤器归档，自动选择带 \\All 标记的所有邮件。
+            for row in folders:
+                if not isinstance(row, bytes):
+                    continue
+                match = re.match(rb'^\([^)]*\\All(?:Mail)?\b[^)]*\)\s+(?:"[^"]*"|NIL)\s+(.+)$', row, re.I)
+                if match:
+                    folder = match.group(1).decode("ascii")
+                    break
+            if not folder:
+                raise RuntimeError("IMAP 无法自动找到所有邮件，请配置 IMAP_FOLDER")
+        status, _ = client.select(folder, readonly=True)
+        if status != "OK":
+            raise RuntimeError("IMAP 无法以只读方式打开邮件文件夹")
+        yield client
+    finally:
+        try:
+            client.logout()
+        except (imaplib.IMAP4.error, OSError):
+            pass
+
+
+def imap_state(client):
+    values = []
+    for key in ("UIDVALIDITY", "UIDNEXT"):
+        _, data = client.response(key)
+        if not data or not data[0]:
+            raise RuntimeError("IMAP 缺少邮件 UID 状态，无法安全区分新旧邮件")
+        values.append(int(data[0]))
+    return tuple(values)
+
+
+def get_imap_snapshot():
+    with imap_mailbox() as client:
+        return imap_state(client)
+
+
+def parse_euserv_pin(raw_message, recipient, requested_at, received_at):
+    message = BytesParser(policy=policy.default).parsebytes(raw_message)
+    if parseaddr(str(message.get("From", "")))[1].lower() != "no-reply@euserv.com":
+        return None
+    if "pin for the confirmation of a security check" not in str(message.get("Subject", "")).lower():
+        return None
+    addresses = []
+    for name in ("To", "Cc", "Delivered-To", "X-Original-To"):
+        addresses.extend(str(value) for value in message.get_all(name, []))
+    if recipient and recipient.lower() not in {addr.lower() for _, addr in getaddresses(addresses)}:
+        return None
+    try:
+        sent = parsedate_to_datetime(str(message.get("Date", "")))
+        if sent.tzinfo is None:
+            sent = sent.replace(tzinfo=timezone.utc)
+        if sent.timestamp() < requested_at - 120 or received_at < requested_at - 5:
+            return None
+    except (ValueError, TypeError):
+        return None
+    body = message.get_body(preferencelist=("plain", "html"))
+    if body is None:
+        return None
+    text = body.get_content()
+    if body.get_content_type() == "text/html":
+        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+    match = re.search(r"\bPIN\s*:\s*([0-9]{4,10})\b", text, re.I)
+    return match.group(1) if match else None
+
+
+def get_pin_from_imap(snapshot, requested_at, recipient):
+    deadline = time.monotonic() + PIN_MAX_WAIT_TIME
+    validity, first_uid = snapshot
+    while True:
+        with imap_mailbox() as client:
+            current_validity, _ = imap_state(client)
+            if current_validity != validity:
+                raise RuntimeError("IMAP 邮箱 UID 已改变，请重新运行以获取本次新 PIN")
+            criteria = '(UID {}:* FROM "no-reply@euserv.com" SUBJECT "PIN for the Confirmation of a Security Check")'.format(first_uid)
+            status, data = client.uid("search", None, criteria)
+            if status != "OK":
+                raise RuntimeError("IMAP 搜索本次 PIN 邮件失败")
+            uids = data[0].split() if data and data[0] else []
+            # UID n:* 在 n 大于当前最大 UID 时可能返回最后一封旧邮件，仍需显式比较。
+            for uid in sorted((int(value) for value in uids if int(value) >= first_uid), reverse=True)[:50]:
+                status, parts = client.uid("fetch", str(uid), "(INTERNALDATE BODY.PEEK[])")
+                if status != "OK":
+                    raise RuntimeError("IMAP 读取本次 PIN 邮件失败")
+                for part in parts:
+                    if not isinstance(part, tuple) or len(part) != 2:
+                        continue
+                    date = imaplib.Internaldate2tuple(part[0])
+                    if date is None:
+                        continue
+                    pin = parse_euserv_pin(part[1], recipient, requested_at, time.mktime(date))
+                    if pin:
+                        log("[IMAP] 已获取本次请求的新 PIN")
+                        return pin
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("IMAP 未收到本次请求的新 PIN，请检查收件邮箱和收件人配置")
+        time.sleep(min(WAITING_TIME_OF_PIN, remaining))
+
 # 登录函数
 @login_retry(max_retry=LOGIN_MAX_RETRY_COUNT)
 def login(username: str, password: str) -> (str, requests.session):
@@ -315,7 +455,8 @@ def get_servers(sess_id: str, session: requests.session) -> {}:
 
 # 续期操作
 def renew(
-    sess_id: str, session: requests.session, password: str, order_id: str, mailparser_dl_url_id: str
+    sess_id: str, session: requests.session, password: str, order_id: str,
+    mailparser_dl_url_id: str, pin_recipient: str = ""
 ) -> bool:
     # 执行续期操作# 
     url = "https://support.euserv.com/index.iphp"
@@ -335,11 +476,15 @@ def renew(
     response = session.post(url, headers=headers, data=data, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
 
-    previous_records = {
-        mailparser_record_id(row) for row in get_mailparser_records(mailparser_dl_url_id)
-    }
+    if PIN_SOURCE == "imap":
+        snapshot = get_imap_snapshot()
+    else:
+        previous_records = {
+            mailparser_record_id(row) for row in get_mailparser_records(mailparser_dl_url_id)
+        }
 
     # 弹出 'Security Check' 窗口，将自动触发 '发送 PIN'。
+    requested_at = time.time()
     response = session.post(
         url,
         headers=headers,
@@ -354,7 +499,10 @@ def renew(
     response.raise_for_status()
 
     # 等待邮件解析器解析出 PIN
-    pin = get_pin_from_mailparser(mailparser_dl_url_id, previous_records)
+    if PIN_SOURCE == "imap":
+        pin = get_pin_from_imap(snapshot, requested_at, IMAP_PIN_RECIPIENT or pin_recipient)
+    else:
+        pin = get_pin_from_mailparser(mailparser_dl_url_id, previous_records)
 
     # 使用 PIN 获取 token
     data = {
@@ -442,7 +590,13 @@ def main_handler(event, context):
         exit(1)
     user_list = USERNAME.strip().split()
     passwd_list = PASSWORD.strip().split()
-    mailparser_dl_url_id_list = MAILPARSER_DOWNLOAD_URL_ID.strip().split()
+    if PIN_SOURCE not in ("imap", "mailparser"):
+        log("[AutoEUServerless] EUSERV_PIN_SOURCE 必须为 imap 或 mailparser")
+        exit(1)
+    if PIN_SOURCE == "imap" and (not IMAP_USERNAME or not IMAP_APP_PASSWORD):
+        log("[AutoEUServerless] 请配置 IMAP_USERNAME 和 IMAP_APP_PASSWORD")
+        exit(1)
+    mailparser_dl_url_id_list = (MAILPARSER_DOWNLOAD_URL_ID or "").strip().split() if PIN_SOURCE == "mailparser" else [""] * len(user_list)
     if len(user_list) != len(passwd_list):
         log("[AutoEUServerless] 用户名和密码数量不匹配!")
         exit(1)
@@ -464,7 +618,8 @@ def main_handler(event, context):
             log("[AutoEUServerless] 检测到第 {} 个账号有 {} 台 VPS，正在尝试续期".format(i + 1, len(servers)))
             for k, v in servers.items():
                 if v:
-                    if not renew(sessid, s, passwd_list[i], k, mailparser_dl_url_id_list[i]):
+                    if not renew(sessid, s, passwd_list[i], k, mailparser_dl_url_id_list[i],
+                                 user_list[i] if "@" in user_list[i] else ""):
                         failed = True
                         log("[AutoEUServerless] ServerID: %s 续订错误!" % k)
                     else:

@@ -31,4 +31,9 @@ jobs:
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_USER_ID: ${{ secrets.TG_USER_ID }}
         MAILPARSER_DOWNLOAD_URL_ID: ${{ secrets.MAILPARSER_DOWNLOAD_URL_ID }}
+        EUSERV_PIN_SOURCE: ${{ secrets.EUSERV_PIN_SOURCE }}
+        IMAP_USERNAME: ${{ secrets.IMAP_USERNAME }}
+        IMAP_APP_PASSWORD: ${{ secrets.IMAP_APP_PASSWORD }}
+        IMAP_PIN_RECIPIENT: ${{ secrets.IMAP_PIN_RECIPIENT }}
+        IMAP_FOLDER: ${{ secrets.IMAP_FOLDER }}
       run: python Github_Action.py

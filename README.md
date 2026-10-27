@@ -12,6 +12,32 @@ AutoEUServerless 是一个基于腾讯云函数 Serverless 架构的自动化工
 
 ## 续期校验与排错
 
+### Gmail IMAP 直接取码
+
+当 Mailparser 额度耗尽或不再接收新邮件时，可改用 Gmail IMAP。使用 Python 3.9 或更高版本，
+无需额外的邮件解析服务。为接收 EUserv PIN 的 Gmail 账号开启两步验证，并在
+[Google 应用专用密码](https://myaccount.google.com/apppasswords)中创建专用密码。
+
+将 `euserv-pin.example.json` 复制为脚本旁的 `euserv-pin.json`，填写邮箱和应用专用密码，
+并在 Linux 上执行 `chmod 600 euserv-pin.json`。此文件已加入 `.gitignore`。
+也可以通过 `EUSERV_PIN_CONFIG` 指定私密配置文件路径，或使用同名环境变量覆盖配置：
+
+| 配置项 | 说明 |
+| --- | --- |
+| `EUSERV_PIN_SOURCE` | 设为 `imap` 使用邮箱；默认 `mailparser` 保留原有方式 |
+| `IMAP_USERNAME` | 实际接收 PIN 邮件的 Gmail 地址 |
+| `IMAP_APP_PASSWORD` | Google 生成的应用专用密码，不能使用 Google 登录密码 |
+| `IMAP_PIN_RECIPIENT` | EUserv 邮件原始收件人地址；邮箱转发或使用客户 ID 登录时应填写 |
+| `IMAP_FOLDER` | 默认自动选择“所有邮件”，也可手动指定如 `INBOX` |
+| `IMAP_HOST` / `IMAP_PORT` | 默认 `imap.gmail.com` / `993`，启用 TLS 证书校验 |
+
+IMAP 在发出 PIN 请求前记录邮箱 UID，只读取本次请求后新增的 EUserv 安全验证邮件，
+并核对收件人与邮件时间。邮箱以只读方式打开，读取不会将邮件标记为已读。
+使用 IMAP 时无需配置 `MAILPARSER_DOWNLOAD_URL_ID`。
+GitHub Actions 用户可将以上配置作为同名仓库 Secrets 提供。
+
+### Mailparser 与续期结果
+
 发送续期 PIN 前，脚本会记录 Mailparser 已有的邮件记录，随后每隔
 `WAITING_TIME_OF_PIN` 秒检查新记录，最多等待 `PIN_MAX_WAIT_TIME` 秒（默认 180 秒）。
 旧邮件中的 PIN 不会被再次提交，日志也不会输出 PIN。

@@ -1,0 +1,6 @@
+{
+  "EUSERV_PIN_SOURCE": "imap",
+  "IMAP_USERNAME": "your-gmail@gmail.com",
+  "IMAP_APP_PASSWORD": "",
+  "IMAP_PIN_RECIPIENT": "your-euserv-account-email@gmail.com"
+}
