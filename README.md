@@ -10,6 +10,24 @@ AutoEUServerless 是一个基于腾讯云函数 Serverless 架构的自动化工
 - **验证码识别**：自动识别登录过程中的验证码。
 - **Telegram 通知**：通过 Telegram Bot 发送续期状态通知。
 
+## 续期校验与排错
+
+发送续期 PIN 前，脚本会记录 Mailparser 已有的邮件记录，随后每隔
+`WAITING_TIME_OF_PIN` 秒检查新记录，最多等待 `PIN_MAX_WAIT_TIME` 秒（默认 180 秒）。
+旧邮件中的 PIN 不会被再次提交，日志也不会输出 PIN。
+若超时，请检查 EUserv 邮件是否送达、邮箱转发规则、Mailparser 解析规则及剩余额度。
+
+只有重新读取到对应服务器的“暂不可续期”状态，才会报告续期成功。
+空服务器列表、登录失败、PIN 验证失败或续期状态未更新都会使命令行任务以退出码 1 结束，
+避免定时任务平台将失败记为成功。云函数调用 `main_handler` 时返回布尔结果。
+
+回归测试无需真实账户，也不会访问外部服务：
+
+```sh
+python -m pip install requests beautifulsoup4
+python -m unittest discover -s tests -v
+```
+
 ## 使用说明
 大家都应该有一只德鸡,即乌龟壳之后唯一的一个永久免费VPS。  
 但是头疼的是必须每个月要续订,而且本身就是白嫖鸡,难道要再开一个鸡跑脚本来给它续订?  
